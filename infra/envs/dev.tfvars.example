@@ -1,0 +1,9 @@
+environment = "dev"
+aws_region  = "us-east-2"
+project_name = "arquitetura-dados"
+
+full_config_tables = [
+  "contratos",
+  "clientes",
+  "parcelas"
+]

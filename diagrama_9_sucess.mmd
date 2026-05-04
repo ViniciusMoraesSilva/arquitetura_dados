@@ -1,0 +1,242 @@
+sequenceDiagram
+    autonumber
+
+    participant Origem as Origem / Evento
+    participant EB as EventBridge
+    participant SFN_ING as AWS Step Functions<br/>Ingestão SOR
+    participant LIng as Lambda<br/>Controlar Ingestão SOR
+    participant DDB as DynamoDB<br/>pipeline_control
+    participant GlueSOR as AWS Glue Job<br/>Carga SOR
+    participant SOR as S3 / SOR
+
+    participant Operador as Operador / Disparo Regras
+    participant SFN_RULES as AWS Step Functions<br/>Regras de Negócio
+    participant LRules as Lambda<br/>Preparar Regras Genérica
+    participant GlueRegraX as AWS Glue Job<br/>Regra/Módulo X
+    participant GlueRegraY as AWS Glue Job<br/>Regra/Módulo Y
+    participant GlueRegraZ as AWS Glue Job<br/>Regra/Módulo Z
+    participant GlueCons as AWS Glue Job<br/>Consolidação SOT
+    participant SOT as S3 / SOT
+
+    participant PubReq as Operador / Disparo Publicação
+    participant SFN_PUB as AWS Step Functions<br/>Publicação SPEC
+    participant GlueSpec as AWS Glue Job<br/>Publicação SPEC
+    participant SPEC as S3 / SPEC
+
+    %% =====================================================
+    %% 1. EVENTO DE INGESTÃO
+    %% =====================================================
+
+    Origem->>EB: Publica evento de tabela disponível<br/>process_name, database_name, table_name, partitions
+
+    Note over Origem,EB: Exemplo:<br/>{"process_name": "seguros",<br/>"database_name": "db_origem",<br/>"table_name": "contratos",<br/>"partitions": {"data_referencia": "202604", "dia_base": "15"}}
+
+    EB->>SFN_ING: Dispara AWS Step Functions Ingestão SOR<br/>ex: sfn-orq-ingestao-sor-seguros
+
+    %% =====================================================
+    %% 2. REGISTRO DA INGESTÃO
+    %% =====================================================
+
+    SFN_ING->>LIng: action = REGISTER_INGESTION
+
+    LIng->>LIng: Gera ingestion_id<br/>ex: ing_100
+
+    LIng->>DDB: Cria INGESTION_ID#ing_100 / METADATA<br/>status = PROCESSING_SOR<br/>sem predicate<br/>sem target_table_name
+
+    Note over LIng,DDB: Item criado:<br/>process_name = seguros<br/>source_database_name = db_origem<br/>source_table_name = contratos<br/>partitions = objeto recebido<br/>status = PROCESSING_SOR
+
+    LIng-->>SFN_ING: Retorna ingestion_id
+
+    %% =====================================================
+    %% 3. PROCESSAMENTO SOR
+    %% =====================================================
+
+    SFN_ING->>GlueSOR: Executa AWS Glue Job Carga SOR<br/>parâmetro: ingestion_id
+
+    GlueSOR->>DDB: Busca INGESTION_ID#ing_100 / METADATA
+
+    DDB-->>GlueSOR: Retorna process_name, database_name,<br/>table_name e partitions
+
+    GlueSOR->>GlueSOR: Interpreta partitions<br/>monta predicate internamente<br/>define destino SOR internamente
+
+    Note over GlueSOR: O Glue SOR decide:<br/>1. como ler a origem<br/>2. qual predicate usar<br/>3. em qual tabela/prefixo SOR gravar<br/>4. quais regras técnicas aplicar
+
+    GlueSOR->>Origem: Lê origem conforme regra interna do Glue
+
+    GlueSOR->>SOR: Grava dados na SOR<br/>com ingestion_id
+
+    GlueSOR-->>SFN_ING: Carga SOR finalizada com sucesso
+
+    %% =====================================================
+    %% 4. FINALIZAÇÃO DA INGESTÃO
+    %% =====================================================
+
+    SFN_ING->>LIng: action = MARK_LOADED_SOR<br/>ingestion_id = ing_100
+
+    LIng->>DDB: Atualiza INGESTION_ID#ing_100<br/>status = LOADED_SOR
+
+    LIng->>DDB: Cria INGESTION_HISTORY#seguros#contratos<br/>INGESTION#ing_100
+
+    LIng->>DDB: Atualiza CURRENT_SOR#seguros#contratos<br/>current_ingestion_id = ing_100<br/>partitions = partitions do evento
+
+    LIng-->>SFN_ING: Finalização da ingestão concluída
+
+    Note over DDB: CURRENT_SOR é por processo + tabela:<br/>PK = CURRENT_SOR#seguros#contratos<br/>SK = CURRENT
+
+    Note over Origem,DDB: O mesmo fluxo ocorre para as demais tabelas.<br/>Ex: clientes = ing_200, parcelas = ing_300.
+
+    %% =====================================================
+    %% 5. DISPARO DAS REGRAS DE NEGÓCIO
+    %% =====================================================
+
+    Operador->>SFN_RULES: Dispara regras de negócio<br/>data_referencia + input_overrides opcional
+
+    Note over Operador,SFN_RULES: Exemplo sem override:<br/>{"data_referencia": "202604"}<br/><br/>Exemplo com override:<br/>{"data_referencia": "202604",<br/>"input_overrides": {"contratos": "ing_090"}}
+
+    SFN_RULES->>LRules: Chama Lambda Preparar Regras<br/>process_name = seguros<br/>data_referencia = 202604<br/>input_overrides opcional
+
+    %% =====================================================
+    %% 6. PREPARAÇÃO DAS REGRAS DE NEGÓCIO
+    %% =====================================================
+
+    LRules->>DDB: Consulta PROCESS_RULES_CONFIG#seguros
+
+    DDB-->>LRules: Retorna tabelas das regras<br/>contratos, clientes, parcelas
+
+    loop Para cada tabela retornada no PROCESS_RULES_CONFIG
+        alt Existe input_overrides para a tabela
+            LRules->>DDB: Valida INGESTION_ID informado no override
+
+            alt Override válido
+                DDB-->>LRules: INGESTION_ID existe e está LOADED_SOR
+                LRules->>LRules: Seleciona ingestion_id do override<br/>lock_source = OVERRIDE
+            else Override inválido
+                DDB-->>LRules: INGESTION_ID inexistente ou status diferente de LOADED_SOR
+                LRules->>DDB: Cria/atualiza PROCESS HEADER<br/>status = FAILED_INVALID_OVERRIDE
+                LRules-->>SFN_RULES: Retorna erro
+                SFN_RULES-->>Operador: Regras não iniciadas<br/>override inválido
+            end
+
+        else Não existe override para a tabela
+            LRules->>DDB: Busca CURRENT_SOR#seguros#tabela
+
+            alt CURRENT_SOR encontrado
+                DDB-->>LRules: Retorna current_ingestion_id
+                LRules->>LRules: Seleciona ingestion_id do CURRENT_SOR<br/>lock_source = CURRENT_SOR
+            else CURRENT_SOR não encontrado
+                DDB-->>LRules: Não encontrado
+                LRules->>DDB: Cria/atualiza PROCESS HEADER<br/>status = FAILED_INPUT_MISSING
+                LRules-->>SFN_RULES: Retorna erro
+                SFN_RULES-->>Operador: Regras não iniciadas<br/>input obrigatório ausente
+            end
+        end
+    end
+
+    LRules->>LRules: Gera process_id<br/>ex: proc_seguros_202604_001
+
+    LRules->>DDB: Cria PROCESS#proc_seguros_202604_001 / HEADER<br/>data_referencia = 202604<br/>execution_type = BUSINESS_RULES<br/>status = LOCKING_INPUTS
+
+    LRules->>DDB: Cria PROCESS_LIST#seguros#202604<br/>PROCESS#proc_seguros_202604_001
+
+    LRules->>DDB: Cria INPUT_LOCK#contratos<br/>ingestion_id escolhido<br/>lock_source = CURRENT_SOR ou OVERRIDE<br/>data_referencia = 202604
+
+    LRules->>DDB: Cria INPUT_LOCK#clientes<br/>ingestion_id escolhido<br/>lock_source = CURRENT_SOR ou OVERRIDE<br/>data_referencia = 202604
+
+    LRules->>DDB: Cria INPUT_LOCK#parcelas<br/>ingestion_id escolhido<br/>lock_source = CURRENT_SOR ou OVERRIDE<br/>data_referencia = 202604
+
+    LRules->>DDB: Atualiza PROCESS HEADER<br/>status = RUNNING
+
+    LRules-->>SFN_RULES: Retorna process_id
+
+    Note over DDB: INPUT_LOCK é a verdade do processo.<br/>Depois de criado, os módulos não escolhem versão.
+
+    %% =====================================================
+    %% 7. EXECUÇÃO DAS REGRAS / MÓDULOS
+    %% =====================================================
+
+    SFN_RULES->>GlueRegraX: Executa AWS Glue Job Regra/Módulo X<br/>process_id
+
+    GlueRegraX->>DDB: Busca INPUT_LOCK das tabelas necessárias
+
+    DDB-->>GlueRegraX: Retorna ingestion_id travado
+
+    GlueRegraX->>SOR: Lê SOR usando somente ingestion_id
+
+    GlueRegraX->>SOT: Grava saída da regra X<br/>com process_id
+
+    GlueRegraX-->>SFN_RULES: Regra/Módulo X finalizado
+
+    SFN_RULES->>GlueRegraY: Executa AWS Glue Job Regra/Módulo Y<br/>process_id
+
+    GlueRegraY->>DDB: Busca INPUT_LOCK das tabelas necessárias
+
+    DDB-->>GlueRegraY: Retorna ingestion_id travado
+
+    GlueRegraY->>SOR: Lê SOR usando somente ingestion_id
+
+    GlueRegraY->>SOT: Grava saída da regra Y<br/>com process_id
+
+    GlueRegraY-->>SFN_RULES: Regra/Módulo Y finalizado
+
+    SFN_RULES->>GlueRegraZ: Executa AWS Glue Job Regra/Módulo Z<br/>process_id
+
+    GlueRegraZ->>DDB: Busca INPUT_LOCK das tabelas necessárias
+
+    DDB-->>GlueRegraZ: Retorna ingestion_id travado
+
+    GlueRegraZ->>SOR: Lê SOR usando somente ingestion_id
+
+    GlueRegraZ->>SOT: Grava saída da regra Z<br/>com process_id
+
+    GlueRegraZ-->>SFN_RULES: Regra/Módulo Z finalizado
+
+    %% =====================================================
+    %% 8. CONSOLIDAÇÃO DENTRO DA SFN DE REGRAS
+    %% =====================================================
+
+    SFN_RULES->>GlueCons: Executa AWS Glue Job Consolidação SOT<br/>process_id
+
+    GlueCons->>SOT: Lê saídas das regras/módulos<br/>filtrando por process_id
+
+    GlueCons->>SOT: Grava SOT consolidada<br/>com process_id
+
+    GlueCons-->>SFN_RULES: Consolidação finalizada
+
+    SFN_RULES->>DDB: Atualiza PROCESS HEADER<br/>status = RULES_PROCESSED
+
+    SFN_RULES->>DDB: Atualiza PROCESS_LIST#seguros#202604<br/>status = RULES_PROCESSED
+
+    SFN_RULES-->>Operador: Regras de negócio finalizadas<br/>status = RULES_PROCESSED<br/>process_id disponível para publicação
+
+    %% =====================================================
+    %% 9. DISPARO DA PUBLICAÇÃO SPEC
+    %% =====================================================
+
+    PubReq->>SFN_PUB: Dispara AWS Step Functions Publicação SPEC<br/>process_id
+
+    Note over PubReq,SFN_PUB: Exemplo:<br/>{"process_id": "proc_seguros_202604_001"}
+
+    SFN_PUB->>DDB: Busca PROCESS#proc_seguros_202604_001 / HEADER
+
+    DDB-->>SFN_PUB: Retorna process_name, data_referencia e status
+
+    alt Processo está RULES_PROCESSED
+        SFN_PUB->>GlueSpec: Chama AWS Glue Job Publicação SPEC<br/>process_id
+
+        GlueSpec->>SOT: Lê SOT consolidada<br/>por process_id
+
+        GlueSpec->>SPEC: Grava visão oficial SPEC<br/>com process_id e data_referencia
+
+        GlueSpec-->>SFN_PUB: Glue Publicação SPEC finalizado
+
+        SFN_PUB->>DDB: Atualiza PROCESS HEADER<br/>status = PUBLISHED
+
+        SFN_PUB->>DDB: Atualiza PROCESS_LIST#seguros#202604<br/>status = PUBLISHED
+
+        SFN_PUB-->>PubReq: Publicação SPEC finalizada<br/>status = PUBLISHED
+
+    else Processo não está RULES_PROCESSED
+        SFN_PUB--x PubReq: Erro na publicação<br/>processo não está pronto para publicação
+
+        Note over SFN_PUB,DDB: Não atualiza PROCESS HEADER.<br/>Não altera PROCESS_LIST.<br/>A execução da AWS Step Functions Publicação SPEC deve falhar.
+    end

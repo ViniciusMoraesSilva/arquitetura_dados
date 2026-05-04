@@ -1,0 +1,329 @@
+{
+  "Comment": "MVP1 FULL seguros: prepara snapshot, executa modulos x/y/z, consolida SOT e publica SPEC.",
+  "StartAt": "PrepararFull",
+  "States": {
+    "PrepararFull": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${prepare_full_lambda_arn}",
+        "Payload": {
+          "data_referencia.$": "$.data_referencia",
+          "process_name": "seguros"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Next": "StatusModuloXStarted"
+    },
+    "StatusModuloXStarted": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "MODULO_X",
+          "status": "STARTED"
+        }
+      },
+      "ResultPath": null,
+      "Next": "ModuloX"
+    },
+    "ModuloX": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${module_x_job_name}",
+        "Arguments": {
+          "--PROCESS_ID.$": "$.process_id"
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error_info",
+          "Next": "StatusModuloXFailed"
+        }
+      ],
+      "Next": "StatusModuloXSucceeded"
+    },
+    "StatusModuloXSucceeded": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "MODULO_X",
+          "status": "SUCCEEDED"
+        }
+      },
+      "ResultPath": null,
+      "Next": "StatusModuloYStarted"
+    },
+    "StatusModuloXFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "MODULO_X",
+          "status": "FAILED",
+          "process_status": "FAILED",
+          "error.$": "$.error_info.Cause"
+        }
+      },
+      "End": true
+    },
+    "StatusModuloYStarted": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "MODULO_Y",
+          "status": "STARTED"
+        }
+      },
+      "ResultPath": null,
+      "Next": "ModuloY"
+    },
+    "ModuloY": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${module_y_job_name}",
+        "Arguments": {
+          "--PROCESS_ID.$": "$.process_id"
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error_info",
+          "Next": "StatusModuloYFailed"
+        }
+      ],
+      "Next": "StatusModuloYSucceeded"
+    },
+    "StatusModuloYSucceeded": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "MODULO_Y",
+          "status": "SUCCEEDED"
+        }
+      },
+      "ResultPath": null,
+      "Next": "StatusModuloZStarted"
+    },
+    "StatusModuloYFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "MODULO_Y",
+          "status": "FAILED",
+          "process_status": "FAILED",
+          "error.$": "$.error_info.Cause"
+        }
+      },
+      "End": true
+    },
+    "StatusModuloZStarted": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "MODULO_Z",
+          "status": "STARTED"
+        }
+      },
+      "ResultPath": null,
+      "Next": "ModuloZ"
+    },
+    "ModuloZ": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${module_z_job_name}",
+        "Arguments": {
+          "--PROCESS_ID.$": "$.process_id"
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error_info",
+          "Next": "StatusModuloZFailed"
+        }
+      ],
+      "Next": "StatusModuloZSucceeded"
+    },
+    "StatusModuloZSucceeded": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "MODULO_Z",
+          "status": "SUCCEEDED"
+        }
+      },
+      "ResultPath": null,
+      "Next": "StatusConsolidationStarted"
+    },
+    "StatusModuloZFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "MODULO_Z",
+          "status": "FAILED",
+          "process_status": "FAILED",
+          "error.$": "$.error_info.Cause"
+        }
+      },
+      "End": true
+    },
+    "StatusConsolidationStarted": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "CONSOLIDATION",
+          "status": "STARTED"
+        }
+      },
+      "ResultPath": null,
+      "Next": "ConsolidacaoSot"
+    },
+    "ConsolidacaoSot": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${consolidation_job_name}",
+        "Arguments": {
+          "--PROCESS_ID.$": "$.process_id"
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error_info",
+          "Next": "StatusConsolidationFailed"
+        }
+      ],
+      "Next": "StatusConsolidationSucceeded"
+    },
+    "StatusConsolidationSucceeded": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "CONSOLIDATION",
+          "status": "SUCCEEDED"
+        }
+      },
+      "ResultPath": null,
+      "Next": "StatusPublicationStarted"
+    },
+    "StatusConsolidationFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "CONSOLIDATION",
+          "status": "FAILED",
+          "process_status": "FAILED",
+          "error.$": "$.error_info.Cause"
+        }
+      },
+      "End": true
+    },
+    "StatusPublicationStarted": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "PUBLICATION",
+          "status": "STARTED"
+        }
+      },
+      "ResultPath": null,
+      "Next": "PublicacaoSpec"
+    },
+    "PublicacaoSpec": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "${publication_job_name}",
+        "Arguments": {
+          "--PROCESS_ID.$": "$.process_id"
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error_info",
+          "Next": "StatusPublicationFailed"
+        }
+      ],
+      "Next": "StatusPublicationSucceeded"
+    },
+    "StatusPublicationSucceeded": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "PUBLICATION",
+          "status": "SUCCEEDED",
+          "process_status": "PUBLISHED"
+        }
+      },
+      "End": true
+    },
+    "StatusPublicationFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${update_step_status_lambda_arn}",
+        "Payload": {
+          "process_id.$": "$.process_id",
+          "step_name": "PUBLICATION",
+          "status": "FAILED",
+          "process_status": "FAILED",
+          "error.$": "$.error_info.Cause"
+        }
+      },
+      "End": true
+    }
+  }
+}

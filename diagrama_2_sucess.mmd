@@ -1,0 +1,183 @@
+sequenceDiagram
+    autonumber
+
+    participant Origem as Origem / Evento
+    participant EB as EventBridge
+    participant SFN_ING as SFN Ingestão SOR
+    participant LReg as Lambda Registrar Ingestão
+    participant DDB as DynamoDB pipeline_control
+    participant GlueSOR as Glue Job SOR
+    participant SOR as S3 / SOR
+
+    participant Operador as Operador / Disparo FULL
+    participant SFN_FULL as SFN FULL do Processo
+    participant LFull as Lambda Preparar FULL Genérica
+    participant GlueModX as Glue Módulo X
+    participant GlueModY as Glue Módulo Y
+    participant GlueModZ as Glue Módulo Z
+    participant SOT as S3 / SOT
+    participant GlueCons as Glue Consolidação
+    participant GlueSpec as Glue Publicação SPEC
+    participant SPEC as S3 / SPEC
+
+    %% =====================================================
+    %% 1. EVENTO DE INGESTÃO
+    %% =====================================================
+
+    Origem->>EB: Evento de tabela disponível<br/>process_name, database_name, table_name, partitions
+
+    EB->>SFN_ING: Dispara ingestão SOR<br/>ex: sfn-orq-ingestao-sor-seguros
+
+    SFN_ING->>LReg: Chama Lambda registrar ingestão
+
+    LReg->>LReg: Gera ingestion_id<br/>ex: ing_100
+
+    LReg->>DDB: Cria INGESTION_ID#ing_100 / METADATA<br/>status = PENDING_PROCESSING<br/>sem predicate<br/>sem target_table_name
+
+    LReg-->>SFN_ING: Retorna ingestion_id
+
+    %% =====================================================
+    %% 2. PROCESSAMENTO SOR
+    %% =====================================================
+
+    SFN_ING->>DDB: Atualiza INGESTION_ID#ing_100<br/>status = PROCESSING_SOR
+
+    SFN_ING->>GlueSOR: Executa Glue Job SOR<br/>parâmetro: ingestion_id
+
+    GlueSOR->>DDB: Busca INGESTION_ID#ing_100 / METADATA
+
+    DDB-->>GlueSOR: Retorna process_name, database_name,<br/>table_name e partitions
+
+    GlueSOR->>GlueSOR: Interpreta partitions<br/>monta predicate internamente<br/>define destino SOR internamente
+
+    GlueSOR->>Origem: Lê origem conforme regra do Glue
+
+    GlueSOR->>SOR: Grava dados na SOR<br/>com ingestion_id
+
+    GlueSOR-->>SFN_ING: Finaliza carga SOR com sucesso
+
+    %% =====================================================
+    %% 3. FINALIZAÇÃO DA INGESTÃO
+    %% =====================================================
+
+    SFN_ING->>DDB: Atualiza INGESTION_ID#ing_100<br/>status = LOADED_SOR
+
+    SFN_ING->>DDB: Cria INGESTION_HISTORY#seguros#contratos<br/>INGESTION#ing_100
+
+    SFN_ING->>DDB: Atualiza CURRENT_SOR#seguros#contratos<br/>current_ingestion_id = ing_100<br/>partitions = partitions do evento
+
+    Note over Origem,DDB: O mesmo fluxo ocorre para as demais tabelas do processo.<br/>Ex: clientes = ing_200, parcelas = ing_300.
+
+    %% =====================================================
+    %% 4. DISPARO FULL
+    %% =====================================================
+
+    Operador->>SFN_FULL: Dispara FULL<br/>process_name já definido pela SFN<br/>input_overrides opcional
+
+    Note over Operador,SFN_FULL: Exemplo sem override:<br/>{}<br/><br/>Exemplo com override:<br/>{"input_overrides": {"contratos": "ing_090"}}
+
+    SFN_FULL->>LFull: Chama Lambda preparar FULL<br/>process_name + input_overrides opcional
+
+    %% =====================================================
+    %% 5. PREPARAÇÃO FULL
+    %% =====================================================
+
+    LFull->>DDB: Consulta FULL_CONFIG#seguros
+
+    DDB-->>LFull: Retorna tabelas do FULL<br/>contratos, clientes, parcelas
+
+    alt Existe input_overrides para a tabela
+        LFull->>DDB: Valida INGESTION_ID informado no override<br/>ex: contratos = ing_090
+        DDB-->>LFull: INGESTION_ID existe e está LOADED_SOR
+        LFull->>LFull: Seleciona ingestion_id do override<br/>lock_source = OVERRIDE
+    else Não existe override para a tabela
+        LFull->>DDB: Busca CURRENT_SOR#seguros#tabela
+        DDB-->>LFull: Retorna current_ingestion_id
+        LFull->>LFull: Seleciona ingestion_id do CURRENT_SOR<br/>lock_source = CURRENT_SOR
+    end
+
+    LFull->>LFull: Gera process_id<br/>ex: proc_seguros_001
+
+    LFull->>DDB: Cria PROCESS#proc_seguros_001 / HEADER<br/>status = LOCKING_INPUTS
+
+    LFull->>DDB: Cria PROCESS_LIST#seguros<br/>PROCESS#proc_seguros_001
+
+    LFull->>DDB: Cria INPUT_LOCK#contratos<br/>ingestion_id escolhido<br/>lock_source = CURRENT_SOR ou OVERRIDE
+
+    LFull->>DDB: Cria INPUT_LOCK#clientes<br/>ingestion_id escolhido<br/>lock_source = CURRENT_SOR ou OVERRIDE
+
+    LFull->>DDB: Cria INPUT_LOCK#parcelas<br/>ingestion_id escolhido<br/>lock_source = CURRENT_SOR ou OVERRIDE
+
+    LFull->>DDB: Atualiza PROCESS HEADER<br/>status = RUNNING
+
+    LFull-->>SFN_FULL: Retorna process_id
+
+    %% =====================================================
+    %% 6. MÓDULOS
+    %% =====================================================
+
+    SFN_FULL->>GlueModX: Executa Módulo X<br/>process_id
+
+    GlueModX->>DDB: Busca INPUT_LOCK das tabelas necessárias
+
+    DDB-->>GlueModX: Retorna ingestion_id travado
+
+    GlueModX->>SOR: Lê SOR usando somente ingestion_id
+
+    GlueModX->>SOT: Grava saída do módulo X<br/>com process_id
+
+    GlueModX-->>SFN_FULL: Módulo X finalizado
+
+    SFN_FULL->>GlueModY: Executa Módulo Y<br/>process_id
+
+    GlueModY->>DDB: Busca INPUT_LOCK das tabelas necessárias
+
+    DDB-->>GlueModY: Retorna ingestion_id travado
+
+    GlueModY->>SOR: Lê SOR usando somente ingestion_id
+
+    GlueModY->>SOT: Grava saída do módulo Y<br/>com process_id
+
+    GlueModY-->>SFN_FULL: Módulo Y finalizado
+
+    SFN_FULL->>GlueModZ: Executa Módulo Z<br/>process_id
+
+    GlueModZ->>DDB: Busca INPUT_LOCK das tabelas necessárias
+
+    DDB-->>GlueModZ: Retorna ingestion_id travado
+
+    GlueModZ->>SOR: Lê SOR usando somente ingestion_id
+
+    GlueModZ->>SOT: Grava saída do módulo Z<br/>com process_id
+
+    GlueModZ-->>SFN_FULL: Módulo Z finalizado
+
+    %% =====================================================
+    %% 7. CONSOLIDAÇÃO
+    %% =====================================================
+
+    SFN_FULL->>GlueCons: Executa consolidação<br/>process_id
+
+    GlueCons->>SOT: Lê saídas dos módulos<br/>filtrando por process_id
+
+    GlueCons->>SOT: Grava SOT consolidada<br/>com process_id
+
+    GlueCons-->>SFN_FULL: Consolidação finalizada
+
+    %% =====================================================
+    %% 8. PUBLICAÇÃO SPEC
+    %% =====================================================
+
+    SFN_FULL->>GlueSpec: Executa publicação SPEC<br/>process_id
+
+    GlueSpec->>SOT: Lê SOT consolidada<br/>por process_id
+
+    GlueSpec->>SPEC: Grava visão oficial SPEC
+
+    GlueSpec-->>SFN_FULL: Publicação finalizada
+
+    SFN_FULL->>DDB: Atualiza PROCESS HEADER<br/>status = PUBLISHED
+
+    SFN_FULL->>DDB: Atualiza PROCESS_LIST<br/>status = PUBLISHED
+
+    SFN_FULL-->>Operador: FULL finalizado com sucesso<br/>status = PUBLISHED

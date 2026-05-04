@@ -1,0 +1,200 @@
+flowchart TB
+
+    %% =========================
+    %% AWS ACCOUNT
+    %% =========================
+    subgraph AWS["Conta AWS - Ambiente Dados"]
+
+        %% =========================
+        %% NETWORK
+        %% =========================
+        subgraph VPC["VPC"]
+            subgraph PUB["Subnets Públicas"]
+                NAT["NAT Gateway\nopcional"]
+            end
+
+            subgraph PRIV["Subnets Privadas"]
+                LAMBDA_VPC["Lambdas em VPC\nopcional"]
+                GLUE_CONN["Glue Connections\nopcional"]
+            end
+
+            VPCE_S3["VPC Endpoint S3"]
+            VPCE_DDB["VPC Endpoint DynamoDB"]
+            VPCE_LOGS["VPC Endpoint CloudWatch Logs\nopcional"]
+            VPCE_SECRETS["VPC Endpoint Secrets Manager\nopcional"]
+            VPCE_KMS["VPC Endpoint KMS\nopcional"]
+        end
+
+        %% =========================
+        %% EVENT / ORCHESTRATION
+        %% =========================
+        EVENTBRIDGE["EventBridge\nEvento de carga/partição"]
+        
+        SFN_ING["Step Functions\nsfn-orq-ingestao-sor"]
+        SFN_FULL["Step Functions\nsfn-orq-full-seguros"]
+
+        %% =========================
+        %% LAMBDAS
+        %% =========================
+        L_PREP_ING["Lambda\npreparar-ingestao"]
+        L_FIN_OK["Lambda\nfinalizar-carga-sor-sucesso"]
+        L_FIN_FAIL["Lambda\nfinalizar-carga-sor-falha"]
+        L_PREP_FULL["Lambda\npreparar-full-generica"]
+        L_STEP_STATUS["Lambda\natualizar-step-status"]
+
+        %% =========================
+        %% GLUE
+        %% =========================
+        GLUE_CATALOG["Glue Data Catalog"]
+
+        GLUE_SOR["Glue Job\ncarga-sor"]
+        GLUE_MOD_X["Glue Job\nmodulo-x-seguros"]
+        GLUE_MOD_Y["Glue Job\nmodulo-y-seguros"]
+        GLUE_MOD_Z["Glue Job\nmodulo-z-seguros"]
+        GLUE_CONS["Glue Job\nconsolidacao-sot-seguros"]
+        GLUE_SPEC["Glue Job\npublicacao-spec-seguros"]
+
+        %% =========================
+        %% CONTROL PLANE
+        %% =========================
+        DDB["DynamoDB\npipeline_control"]
+
+        %% =========================
+        %% DATA LAKE
+        %% =========================
+        subgraph S3["S3 Data Lake"]
+            S3_SRC["Origem / External Tables\nopcional"]
+            S3_SOR["SOR\ns3://lake/sor/\nversionado por ingestion_id"]
+            S3_SOT["SOT\ns3://lake/sot/\nprocessado por process_id"]
+            S3_SPEC["SPEC\ns3://lake/spec/\nvisão oficial"]
+            S3_LOGS["Logs/Auditoria\nopcional"]
+        end
+
+        %% =========================
+        %% SECURITY / OBSERVABILITY
+        %% =========================
+        IAM["IAM Roles e Policies"]
+        KMS["KMS Keys\ncriptografia"]
+        CW["CloudWatch\nLogs/Metrics"]
+        ATHENA["Athena\nconsulta/debug opcional"]
+        TF["Terraform Pipeline\ninfra + FULL_CONFIG"]
+
+    end
+
+    %% =========================
+    %% TERRAFORM FLOW
+    %% =========================
+    TF --> DDB
+    TF --> S3
+    TF --> IAM
+    TF --> KMS
+    TF --> SFN_ING
+    TF --> SFN_FULL
+    TF --> L_PREP_ING
+    TF --> L_PREP_FULL
+    TF --> GLUE_SOR
+
+    %% =========================
+    %% INGESTION FLOW
+    %% =========================
+    EVENTBRIDGE --> SFN_ING
+
+    SFN_ING --> L_PREP_ING
+    L_PREP_ING --> DDB
+
+    SFN_ING --> GLUE_SOR
+    GLUE_SOR --> GLUE_CATALOG
+    GLUE_SOR --> S3_SRC
+    GLUE_SOR --> S3_SOR
+    GLUE_SOR --> DDB
+
+    SFN_ING --> L_FIN_OK
+    SFN_ING --> L_FIN_FAIL
+
+    L_FIN_OK --> DDB
+    L_FIN_FAIL --> DDB
+
+    %% =========================
+    %% FULL FLOW
+    %% =========================
+    SFN_FULL --> L_PREP_FULL
+    L_PREP_FULL --> DDB
+
+    SFN_FULL --> GLUE_MOD_X
+    SFN_FULL --> GLUE_MOD_Y
+    SFN_FULL --> GLUE_MOD_Z
+
+    GLUE_MOD_X --> DDB
+    GLUE_MOD_Y --> DDB
+    GLUE_MOD_Z --> DDB
+
+    GLUE_MOD_X --> S3_SOR
+    GLUE_MOD_Y --> S3_SOR
+    GLUE_MOD_Z --> S3_SOR
+
+    GLUE_MOD_X --> S3_SOT
+    GLUE_MOD_Y --> S3_SOT
+    GLUE_MOD_Z --> S3_SOT
+
+    SFN_FULL --> GLUE_CONS
+    GLUE_CONS --> S3_SOT
+
+    SFN_FULL --> GLUE_SPEC
+    GLUE_SPEC --> S3_SOT
+    GLUE_SPEC --> S3_SPEC
+
+    %% =========================
+    %% STEP STATUS
+    %% =========================
+    SFN_FULL --> L_STEP_STATUS
+    L_STEP_STATUS --> DDB
+
+    %% =========================
+    %% METADATA / QUERY
+    %% =========================
+    GLUE_CATALOG --> ATHENA
+    ATHENA --> S3_SOR
+    ATHENA --> S3_SOT
+    ATHENA --> S3_SPEC
+
+    %% =========================
+    %% LOGS
+    %% =========================
+    SFN_ING --> CW
+    SFN_FULL --> CW
+
+    L_PREP_ING --> CW
+    L_FIN_OK --> CW
+    L_FIN_FAIL --> CW
+    L_PREP_FULL --> CW
+    L_STEP_STATUS --> CW
+
+    GLUE_SOR --> CW
+    GLUE_MOD_X --> CW
+    GLUE_MOD_Y --> CW
+    GLUE_MOD_Z --> CW
+    GLUE_CONS --> CW
+    GLUE_SPEC --> CW
+
+    %% =========================
+    %% IAM / SECURITY
+    %% =========================
+    IAM -. permissões .-> SFN_ING
+    IAM -. permissões .-> SFN_FULL
+    IAM -. permissões .-> L_PREP_ING
+    IAM -. permissões .-> L_FIN_OK
+    IAM -. permissões .-> L_FIN_FAIL
+    IAM -. permissões .-> L_PREP_FULL
+    IAM -. permissões .-> L_STEP_STATUS
+    IAM -. permissões .-> GLUE_SOR
+    IAM -. permissões .-> GLUE_MOD_X
+    IAM -. permissões .-> GLUE_MOD_Y
+    IAM -. permissões .-> GLUE_MOD_Z
+    IAM -. permissões .-> GLUE_CONS
+    IAM -. permissões .-> GLUE_SPEC
+
+    KMS -. criptografa .-> DDB
+    KMS -. criptografa .-> S3_SOR
+    KMS -. criptografa .-> S3_SOT
+    KMS -. criptografa .-> S3_SPEC
+    KMS -. criptografa .-> CW

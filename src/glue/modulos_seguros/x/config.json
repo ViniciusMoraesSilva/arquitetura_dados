@@ -1,0 +1,30 @@
+{
+  "module_name": "MODULO_X",
+  "required_sor_tables": ["contratos", "clientes"],
+  "sql_file": "sql.sql",
+  "config_origem_dados": {
+    "catalogo": {
+      "group_files": "inPartition",
+      "group_size_bytes": 134217728,
+      "fontes": [
+        {
+          "database_origem": "sor_dev",
+          "tabela_origem": "contratos",
+          "descricao_origem": "SOR contratos"
+        },
+        {
+          "database_origem": "sor_dev",
+          "tabela_origem": "clientes",
+          "descricao_origem": "SOR clientes"
+        }
+      ]
+    },
+    "csv": {
+      "fontes": []
+    }
+  },
+  "destination": {
+    "layer": "sot",
+    "table_name": "seguros_modulo_x"
+  }
+}

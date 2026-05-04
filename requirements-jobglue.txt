@@ -1,0 +1,7 @@
+# Dependencias pipaveis para desenvolvimento local e execucao dos testes.
+# Observacao:
+# - awsglue nao e distribuido via pip comum; no runtime Glue ele vem da imagem/ambiente da AWS.
+
+boto3>=1.34,<2.0
+pyspark>=3.5,<4.0
+pytest>=8.0,<9.0
