@@ -11,7 +11,7 @@ sequenceDiagram
 
     participant Operador as Operador / Disparo Regras
     participant SFN_RULES as AWS Step Functions<br/>Regras de Negócio
-    participant LRules as Lambda<br/>Preparar Regras Genérica
+    participant LRules as Lambda<br/>Criar Processo para Execução Regras Negocio
     participant GlueRegraX as AWS Glue Job<br/>Regra/Módulo X
     participant GlueRegraY as AWS Glue Job<br/>Regra/Módulo Y
     participant GlueRegraZ as AWS Glue Job<br/>Regra/Módulo Z
@@ -97,7 +97,7 @@ sequenceDiagram
 
     Note over Operador,SFN_RULES: Exemplo sem override:<br/>data_referencia: 202604<br/><br/>Exemplo com override:<br/>data_referencia: 202604<br/>input_overrides: seguros_contratos: ing_090
 
-    SFN_RULES->>LRules: Chama Lambda Preparar Regras<br/>process_name = seguros<br/>data_referencia = 202604<br/>input_overrides opcional
+    SFN_RULES->>LRules: Chama Lambda Criar Processo para Execução Regras Negocio<br/>process_name = seguros<br/>data_referencia = 202604<br/>input_overrides opcional
 
     %% =====================================================
     %% 6. PREPARAÇÃO DAS REGRAS DE NEGÓCIO
@@ -116,7 +116,7 @@ sequenceDiagram
                 LRules->>LRules: Seleciona ingestion_id do override<br/>lock_source = OVERRIDE
             else Override inválido
                 DDB-->>LRules: INGESTION_ID inexistente ou status diferente de LOADED_SOR
-                LRules->>DDB: Cria/atualiza PROCESS HEADER<br/>status = FAILED_INVALID_OVERRIDE
+                LRules->>DDB: Cria/atualiza PROCESS METADATA<br/>status = FAILED_INVALID_OVERRIDE
                 LRules-->>SFN_RULES: Retorna erro
                 SFN_RULES-->>Operador: Regras não iniciadas<br/>override inválido
             end
@@ -129,7 +129,7 @@ sequenceDiagram
                 LRules->>LRules: Seleciona ingestion_id do CURRENT_SOR<br/>lock_source = CURRENT_SOR
             else CURRENT_SOR não encontrado
                 DDB-->>LRules: Não encontrado
-                LRules->>DDB: Cria/atualiza PROCESS HEADER<br/>status = FAILED_INPUT_MISSING
+                LRules->>DDB: Cria/atualiza PROCESS METADATA<br/>status = FAILED_INPUT_MISSING
                 LRules-->>SFN_RULES: Retorna erro
                 SFN_RULES-->>Operador: Regras não iniciadas<br/>input obrigatório ausente
             end
@@ -138,7 +138,7 @@ sequenceDiagram
 
     LRules->>LRules: Gera process_id<br/>ex: proc_seguros_202604_001
 
-    LRules->>DDB: Cria PROCESS#proc_seguros_202604_001 / HEADER<br/>data_referencia = 202604<br/>execution_type = BUSINESS_RULES<br/>status = LOCKING_INPUTS
+    LRules->>DDB: Cria PROCESS#proc_seguros_202604_001 / METADATA<br/>data_referencia = 202604<br/>execution_type = BUSINESS_RULES<br/>status = LOCKING_INPUTS
 
     LRules->>DDB: Cria PROCESS_LIST#seguros#202604<br/>PROCESS#proc_seguros_202604_001
 
@@ -148,7 +148,7 @@ sequenceDiagram
 
     LRules->>DDB: Cria INPUT_LOCK#seguros_parcelas<br/>ingestion_id escolhido<br/>lock_source = CURRENT_SOR ou OVERRIDE<br/>data_referencia = 202604
 
-    LRules->>DDB: Atualiza PROCESS HEADER<br/>status = RUNNING
+    LRules->>DDB: Atualiza PROCESS METADATA<br/>status = RUNNING
 
     LRules-->>SFN_RULES: Retorna process_id
 
@@ -206,7 +206,7 @@ sequenceDiagram
 
     GlueCons-->>SFN_RULES: Consolidação finalizada
 
-    SFN_RULES->>DDB: Atualiza PROCESS HEADER<br/>status = RULES_PROCESSED
+    SFN_RULES->>DDB: Atualiza PROCESS METADATA<br/>status = RULES_PROCESSED
 
     SFN_RULES->>DDB: Atualiza PROCESS_LIST#seguros#202604<br/>status = RULES_PROCESSED
 
@@ -220,7 +220,7 @@ sequenceDiagram
 
     Note over PubReq,SFN_PUB: Exemplo:<br/>process_id: proc_seguros_202604_001
 
-    SFN_PUB->>DDB: Busca PROCESS#proc_seguros_202604_001 / HEADER
+    SFN_PUB->>DDB: Busca PROCESS#proc_seguros_202604_001 / METADATA
 
     DDB-->>SFN_PUB: Retorna process_name, data_referencia e status
 
@@ -233,7 +233,7 @@ sequenceDiagram
 
         GlueSpec-->>SFN_PUB: Glue Publicação SPEC finalizado
 
-        SFN_PUB->>DDB: Atualiza PROCESS HEADER<br/>status = PUBLISHED
+        SFN_PUB->>DDB: Atualiza PROCESS METADATA<br/>status = PUBLISHED
 
         SFN_PUB->>DDB: Atualiza PROCESS_LIST#seguros#202604<br/>status = PUBLISHED
 
@@ -242,5 +242,5 @@ sequenceDiagram
     else Processo não está RULES_PROCESSED
         SFN_PUB->>PubReq: Erro na publicação<br/>processo não está pronto para publicação
 
-        Note over SFN_PUB,DDB: Não atualiza PROCESS HEADER.<br/>Não altera PROCESS_LIST.<br/>A execução da AWS Step Functions Publicação SPEC deve falhar.
+        Note over SFN_PUB,DDB: Não atualiza PROCESS METADATA.<br/>Não altera PROCESS_LIST.<br/>A execução da AWS Step Functions Publicação SPEC deve falhar.
     end
