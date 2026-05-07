@@ -1,0 +1,32 @@
+{
+  "tipo_saida_destino": "catalogo",
+  "catalogo": {
+    "group_files": "inPartition",
+    "group_size_bytes": 134217728,
+    "use_glue_parquet_writer": true,
+    "compression": "snappy",
+    "block_size_bytes": 134217728,
+    "destinos": [
+      {
+        "process_name": "seguros",
+        "sor_table_name": "seguros_contratos",
+        "nome_database_destino": "sor_db",
+        "nome_tabela_destino": "seguros_contratos",
+        "particao_tabela_destino": [
+          "ingestion_id"
+        ]
+      }
+    ]
+  },
+  "ambientes": {
+    "dev": {
+      "s3_destino": "s3://bucket-dev/sor"
+    },
+    "hom": {
+      "s3_destino": "s3://bucket-hom/sor"
+    },
+    "prd": {
+      "s3_destino": "s3://bucket-prd/sor"
+    }
+  }
+}

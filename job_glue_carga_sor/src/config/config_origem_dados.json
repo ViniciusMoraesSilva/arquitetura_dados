@@ -1,0 +1,70 @@
+{
+  "catalogo": {
+    "group_files": "inPartition",
+    "group_size_bytes": 134217728
+  },
+  "execucoes": [
+    {
+      "modo_execucao": "sor",
+      "process_name": "seguros",
+      "source_database_name": "db_origem",
+      "source_table_name": "contrato",
+      "sor_table_name": "seguros_contratos",
+      "sql_path": "sql/seguros/seguros_contratos.sql",
+      "post_columns": {
+        "ingestion_id": "{INGESTION_ID}"
+      },
+      "fontes": [
+        {
+          "modo_execucao": "sor",
+          "tipo_origem": "catalogo",
+          "process_name": "{PROCESS_NAME}",
+          "database_origem": "{SOURCE_DATABASE_NAME}",
+          "tabela_origem": "{SOURCE_TABLE_NAME}",
+          "source_database_name": "{SOURCE_DATABASE_NAME}",
+          "source_table_name": "{SOURCE_TABLE_NAME}",
+          "sor_table_name": "{SOR_TABLE_NAME}",
+          "nome_view": "{SOURCE_TABLE_NAME}",
+          "descricao_origem": "Contratos de seguros",
+          "filtro_origem": "data_referencia = '{PARTITION_DATA_REFERENCIA}' AND dia_base = '{PARTITION_DIA_BASE}'",
+          "campos_duplicidade": [
+            "num_contrato"
+          ]
+        }
+      ]
+    },
+    {
+      "modo_execucao": "sot",
+      "process_id": "contratos_sot",
+      "sql_path": "sql/sot/contratos.sql",
+      "post_columns": {
+        "process_id": "{PROCESS_ID}"
+      },
+      "fontes": [
+        {
+          "modo_execucao": "sot",
+          "tipo_origem": "catalogo",
+          "database_origem": "data_base_dev",
+          "tabela_origem": "tabela_contrato",
+          "nome_view": "tabela_contrato",
+          "descricao_origem": "Tabela de Contrato",
+          "filtro_origem": "data_base = '{DATA_REF}'"
+        },
+        {
+          "modo_execucao": "sot",
+          "tipo_origem": "csv",
+          "caminho_s3_origem": "s3://bucket-dev-975822148093-us-east-2-an/csv/tabela_contrato.csv",
+          "nome_view": "tabela_contrato_csv",
+          "descricao_origem": "Tabela de Contrato CSV",
+          "filtro_origem": "data_base = '{DATA_REF}'",
+          "header": true,
+          "delimiter": ",",
+          "infer_schema": true,
+          "encoding": "UTF-8",
+          "quote": "\"",
+          "escape": "\\"
+        }
+      ]
+    }
+  ]
+}
