@@ -1,0 +1,30 @@
+{
+  "catalogo": {
+    "group_files": "inPartition",
+    "group_size_bytes": 134217728
+  },
+  "execucoes": [
+    {
+      "dominio": "sot",
+      "process_id": "contratos_sot",
+      "sql_path": "sql/contratos_sot.sql",
+      "post_columns": {
+        "process_id": "{PROCESS_ID}"
+      },
+      "fontes": [
+        {
+          "tipo_origem": "catalogo",
+          "database_origem": "sor_db",
+          "tabela_origem": "contratos_sor",
+          "filtro_origem": "ingestion_id = '{INGESTION_ID}'"
+        },
+        {
+          "tipo_origem": "catalogo",
+          "database_origem": "sot_db",
+          "tabela_origem": "processos_auxiliares",
+          "filtro_origem": "process_id = '{PROCESS_ID}' AND data_ref = '{DATA_REF}'"
+        }
+      ]
+    }
+  ]
+}

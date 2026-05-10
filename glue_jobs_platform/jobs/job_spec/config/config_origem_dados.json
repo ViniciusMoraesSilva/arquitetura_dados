@@ -1,0 +1,26 @@
+{
+  "catalogo": {
+    "group_files": "inPartition",
+    "group_size_bytes": 134217728
+  },
+  "execucoes": [
+    {
+      "domain": "spec",
+      "process_id": "contratos_spec",
+      "sql_path": "sql/contratos_spec.sql",
+      "post_columns": {
+        "process_id": "{PROCESS_ID}"
+      },
+      "fontes": [
+        {
+          "tipo_origem": "catalogo",
+          "database_origem": "sot_db",
+          "tabela_origem": "contratos_sot",
+          "nome_view": "contratos_sot",
+          "descricao_origem": "Contratos SOT",
+          "filtro_origem": "process_id = '{PROCESS_ID}' AND ingestion_id = '{INGESTION_ID}'"
+        }
+      ]
+    }
+  ]
+}

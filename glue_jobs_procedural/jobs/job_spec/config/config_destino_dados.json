@@ -1,0 +1,32 @@
+{
+  "catalogo": {
+    "group_files": "inPartition",
+    "group_size_bytes": 134217728,
+    "use_glue_parquet_writer": true,
+    "compression": "snappy",
+    "block_size_bytes": 134217728
+  },
+  "destinos": [
+    {
+      "dominio": "spec",
+      "tipo_saida_destino": "catalogo",
+      "process_id": "contratos_spec",
+      "nome_database_destino": "spec_db",
+      "nome_tabela_destino": "contratos_spec",
+      "particao_tabela_destino": [
+        "process_id"
+      ]
+    }
+  ],
+  "ambientes": {
+    "dev": {
+      "s3_destino": "s3://bucket-dev/spec"
+    },
+    "hom": {
+      "s3_destino": "s3://bucket-hom/spec"
+    },
+    "prd": {
+      "s3_destino": "s3://bucket-prd/spec"
+    }
+  }
+}

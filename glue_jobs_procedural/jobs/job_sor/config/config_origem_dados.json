@@ -1,0 +1,25 @@
+{
+  "catalogo": {
+    "group_files": "inPartition",
+    "group_size_bytes": 134217728
+  },
+  "execucoes": [
+    {
+      "dominio": "sor",
+      "process_name": "seguros",
+      "sor_table_name": "seguros_contratos",
+      "sql_path": "sql/seguros_contratos.sql",
+      "post_columns": {
+        "ingestion_id": "{INGESTION_ID}"
+      },
+      "fontes": [
+        {
+          "tipo_origem": "catalogo",
+          "database_origem": "{SOURCE_DATABASE_NAME}",
+          "tabela_origem": "{SOURCE_TABLE_NAME}",
+          "filtro_origem": "data_referencia = '{PARTITION_DATA_REFERENCIA}'"
+        }
+      ]
+    }
+  ]
+}

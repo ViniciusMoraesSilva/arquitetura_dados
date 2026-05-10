@@ -1,0 +1,32 @@
+{
+  "catalogo": {
+    "group_files": "inPartition",
+    "group_size_bytes": 134217728,
+    "use_glue_parquet_writer": true,
+    "compression": "snappy",
+    "block_size_bytes": 134217728
+  },
+  "destinos": [
+    {
+      "dominio": "sot",
+      "tipo_saida_destino": "catalogo",
+      "process_id": "contratos_sot",
+      "nome_database_destino": "sot_db",
+      "nome_tabela_destino": "contratos_sot",
+      "particao_tabela_destino": [
+        "process_id"
+      ]
+    }
+  ],
+  "ambientes": {
+    "dev": {
+      "s3_destino": "s3://bucket-dev/sot"
+    },
+    "hom": {
+      "s3_destino": "s3://bucket-hom/sot"
+    },
+    "prd": {
+      "s3_destino": "s3://bucket-prd/sot"
+    }
+  }
+}

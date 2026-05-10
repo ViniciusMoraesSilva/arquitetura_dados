@@ -1,0 +1,8 @@
+{
+    "python.analysis.extraPaths": [
+        "./glue_jobs_procedural/src"
+    ],
+    "python.autoComplete.extraPaths": [
+        "./glue_jobs_procedural/src"
+    ]
+}
