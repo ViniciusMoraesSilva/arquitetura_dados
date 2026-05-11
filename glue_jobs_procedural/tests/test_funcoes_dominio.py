@@ -21,12 +21,22 @@ class FakeDynamoTable:
         item = self.items.get((Key["PK"], Key["SK"]))
         return {"Item": item} if item else {}
 
+    def query(self, **kwargs):
+        pk = kwargs["ExpressionAttributeValues"][":pk"]
+        prefixo_sk = kwargs["ExpressionAttributeValues"][":prefixo_sk"]
+        return {
+            "Items": [
+                item
+                for (item_pk, item_sk), item in self.items.items()
+                if item_pk == pk and item_sk.startswith(prefixo_sk)
+            ]
+        }
 
-def test_sot_exige_ingestion_id(monkeypatch):
+
+def test_sot_exige_apenas_process_id_como_argumento_de_negocio(monkeypatch):
     valores = {
         "JOB_NAME": "job",
         "PROCESS_ID": "contratos_sot",
-        "DATA_REF": "202604",
         "AMBIENTE": "dev",
         "DBLOCAL": "false",
     }
@@ -39,22 +49,18 @@ def test_sot_exige_ingestion_id(monkeypatch):
 
     monkeypatch.setattr(common, "resolver_argumentos_obrigatorios", fake_resolver)
 
-    with pytest.raises(ValueError, match="INGESTION_ID"):
-        sot.resolver_argumentos_job()
+    assert sot.resolver_argumentos_job() == valores
 
 
-def test_sot_monta_predicate_por_ingestion_id_e_process_id():
+def test_sot_monta_predicate_por_input_lock_e_metadata_processo():
     args = {
-        "PROCESS_ID": "contratos_sot",
-        "DATA_REF": "202604",
-        "INGESTION_ID": "ing_001",
+        "PROCESS_ID": "proc_seguros_202604_001",
     }
-    contexto = sot.montar_contexto_templates(args)
     config_origem = {
         "execucoes": [
             {
                 "dominio": "sot",
-                "process_id": "contratos_sot",
+                "process_name": "seguros",
                 "sql_path": "sql/contratos.sql",
                 "fontes": [
                     {
@@ -70,31 +76,129 @@ def test_sot_monta_predicate_por_ingestion_id_e_process_id():
             }
         ]
     }
+    dynamodb = FakeDynamoResource(
+        {
+            (
+                "PROCESS#proc_seguros_202604_001",
+                "METADATA",
+            ): {
+                "process_id": "proc_seguros_202604_001",
+                "process_name": "seguros",
+                "data_referencia": "202604",
+            },
+            (
+                "PROCESS#proc_seguros_202604_001",
+                "INPUT_LOCK#contratos",
+            ): {
+                "sor_table_name": "contratos",
+                "ingestion_id": "ing_001",
+            },
+        }
+    )
 
-    execucao = sot.obter_execucao(config_origem, args, contexto)
+    contexto = sot.montar_contexto_templates(args, dynamodb_resource=dynamodb)
+    execucao = sot.obter_execucao(config_origem, args, contexto, dynamodb_resource=dynamodb)
     fontes = sot.montar_fontes(execucao)
 
     assert fontes[0]["predicate_final"] == (
-        "ingestion_id = 'ing_001' AND process_id = 'contratos_sot' AND data_ref = '202604'"
+        "ingestion_id = 'ing_001' AND process_id = 'proc_seguros_202604_001' AND data_ref = '202604'"
     )
+    assert contexto["DATA_REF"] == "202604"
     assert sot.obter_colunas_tecnicas(execucao, args) == {
-        "process_id": "contratos_sot"
+        "process_id": "proc_seguros_202604_001"
     }
 
 
-def test_spec_busca_ingestion_id_quando_config_usa_placeholder():
+def test_sot_fonte_sem_ingestion_id_nao_exige_input_lock():
+    args = {"PROCESS_ID": "proc_seguros_202604_001"}
+    config_origem = {
+        "execucoes": [
+            {
+                "dominio": "sot",
+                "process_name": "seguros",
+                "sql_path": "sql/contratos.sql",
+                "fontes": [
+                    {
+                        "tipo_origem": "catalogo",
+                        "database_origem": "sot_db",
+                        "tabela_origem": "processos_auxiliares",
+                        "filtro_origem": "process_id = '{PROCESS_ID}' AND data_ref = '{DATA_REF}'",
+                    }
+                ],
+            }
+        ]
+    }
+    dynamodb = FakeDynamoResource(
+        {
+            (
+                "PROCESS#proc_seguros_202604_001",
+                "METADATA",
+            ): {
+                "process_id": "proc_seguros_202604_001",
+                "process_name": "seguros",
+                "data_referencia": "202604",
+            },
+        }
+    )
+
+    contexto = sot.montar_contexto_templates(args, dynamodb_resource=dynamodb)
+    execucao = sot.obter_execucao(config_origem, args, contexto, dynamodb_resource=dynamodb)
+    fontes = sot.montar_fontes(execucao)
+
+    assert fontes[0]["predicate_final"] == (
+        "process_id = 'proc_seguros_202604_001' AND data_ref = '202604'"
+    )
+
+
+def test_sot_falha_quando_fonte_exige_ingestion_id_sem_input_lock():
+    args = {"PROCESS_ID": "proc_seguros_202604_001"}
+    config_origem = {
+        "execucoes": [
+            {
+                "dominio": "sot",
+                "process_name": "seguros",
+                "sql_path": "sql/contratos.sql",
+                "fontes": [
+                    {
+                        "tipo_origem": "catalogo",
+                        "database_origem": "sor_db",
+                        "tabela_origem": "contratos",
+                        "filtro_origem": "ingestion_id = '{INGESTION_ID}'",
+                    }
+                ],
+            }
+        ]
+    }
+    dynamodb = FakeDynamoResource(
+        {
+            (
+                "PROCESS#proc_seguros_202604_001",
+                "METADATA",
+            ): {
+                "process_id": "proc_seguros_202604_001",
+                "process_name": "seguros",
+                "data_referencia": "202604",
+            },
+        }
+    )
+
+    contexto = sot.montar_contexto_templates(args, dynamodb_resource=dynamodb)
+
+    with pytest.raises(ValueError, match="INPUT_LOCK"):
+        sot.obter_execucao(config_origem, args, contexto, dynamodb_resource=dynamodb)
+
+
+def test_spec_busca_ingestion_id_por_input_lock():
     args = {
-        "PROCESS_ID": "contratos_spec",
-        "DATA_REF": "202604",
+        "PROCESS_ID": "proc_seguros_202604_001",
         "AMBIENTE": "dev",
         "DBLOCAL": "false",
     }
-    contexto = spec.montar_contexto_templates(args)
     config_origem = {
         "execucoes": [
             {
                 "dominio": "spec",
-                "process_id": "contratos_spec",
+                "process_name": "seguros",
                 "sql_path": "sql/contratos.sql",
                 "fontes": [
                     {
@@ -110,12 +214,24 @@ def test_spec_busca_ingestion_id_quando_config_usa_placeholder():
     dynamodb = FakeDynamoResource(
         {
             (
-                "PROCESS_ID#contratos_spec",
-                "DATA_REF#202604#SPEC_METADATA",
-            ): {"ingestion_id": "ing_spec_001"}
+                "PROCESS#proc_seguros_202604_001",
+                "METADATA",
+            ): {
+                "process_id": "proc_seguros_202604_001",
+                "process_name": "seguros",
+                "data_referencia": "202604",
+            },
+            (
+                "PROCESS#proc_seguros_202604_001",
+                "INPUT_LOCK#contratos_sot",
+            ): {
+                "sor_table_name": "contratos_sot",
+                "ingestion_id": "ing_spec_001",
+            },
         }
     )
 
+    contexto = spec.montar_contexto_templates(args, dynamodb_resource=dynamodb)
     execucao = spec.obter_execucao(
         config_origem,
         args,
@@ -130,16 +246,14 @@ def test_spec_busca_ingestion_id_quando_config_usa_placeholder():
 def test_spec_nao_busca_ingestion_id_quando_config_nao_usa_placeholder():
     args = {
         "PROCESS_ID": "contratos_spec",
-        "DATA_REF": "202604",
         "AMBIENTE": "dev",
         "DBLOCAL": "false",
     }
-    contexto = spec.montar_contexto_templates(args)
     config_origem = {
         "execucoes": [
             {
                 "dominio": "spec",
-                "process_id": "contratos_spec",
+                "process_name": "seguros",
                 "sql_path": "sql/contratos.sql",
                 "fontes": [
                     {
@@ -152,8 +266,21 @@ def test_spec_nao_busca_ingestion_id_quando_config_nao_usa_placeholder():
             }
         ]
     }
+    dynamodb = FakeDynamoResource(
+        {
+            (
+                "PROCESS#contratos_spec",
+                "METADATA",
+            ): {
+                "process_id": "contratos_spec",
+                "process_name": "seguros",
+                "data_referencia": "202604",
+            },
+        }
+    )
 
-    execucao = spec.obter_execucao(config_origem, args, contexto)
+    contexto = spec.montar_contexto_templates(args, dynamodb_resource=dynamodb)
+    execucao = spec.obter_execucao(config_origem, args, contexto, dynamodb_resource=dynamodb)
     fontes = spec.montar_fontes(execucao)
 
     assert fontes[0]["predicate_final"] == "process_id = 'contratos_spec'"
@@ -173,21 +300,22 @@ def test_spec_falha_com_multiplos_destinos():
         "destinos": [
             {
                 "dominio": "spec",
-                "process_id": "contratos_spec",
+                "process_name": "seguros",
                 "nome_database_destino": "spec_db",
                 "nome_tabela_destino": "a",
             },
             {
                 "dominio": "spec",
-                "process_id": "contratos_spec",
+                "process_name": "seguros",
                 "nome_database_destino": "spec_db",
                 "nome_tabela_destino": "b",
             },
         ],
     }
+    contexto = {"PROCESS_NAME": "seguros"}
 
     with pytest.raises(ValueError, match="exatamente um destino"):
-        spec.obter_destino(config_destino, args)
+        spec.obter_destino(config_destino, args, contexto)
 
 
 def test_sor_busca_metadata_e_monta_contexto_partitions():

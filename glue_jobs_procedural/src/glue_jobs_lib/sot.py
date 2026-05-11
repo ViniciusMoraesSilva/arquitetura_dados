@@ -9,8 +9,6 @@ from . import common
 ARGUMENTOS_OBRIGATORIOS = [
     "JOB_NAME",
     "PROCESS_ID",
-    "DATA_REF",
-    "INGESTION_ID",
     "AMBIENTE",
     "DBLOCAL",
 ]
@@ -21,27 +19,43 @@ def resolver_argumentos_job() -> dict[str, str]:
     return common.resolver_argumentos_obrigatorios(ARGUMENTOS_OBRIGATORIOS)
 
 
-def montar_contexto_templates(args: dict[str, str]) -> dict[str, str]:
+def montar_contexto_templates(
+    args: dict[str, str],
+    dynamodb_resource: Any,
+    pipeline_control_table: str = common.DEFAULT_PIPELINE_CONTROL_TABLE,
+) -> dict[str, str]:
     """Monta contexto de templates SOT."""
-    return {
-        "PROCESS_ID": args["PROCESS_ID"],
-        "INGESTION_ID": args["INGESTION_ID"],
-        **common.montar_contexto_data(args["DATA_REF"]),
-    }
+    metadata = common.obter_metadata_processo(
+        dynamodb_resource,
+        args["PROCESS_ID"],
+        pipeline_control_table,
+    )
+    return common.montar_contexto_processo(metadata)
 
 
 def obter_execucao(
     config_origem: dict[str, Any],
     args: dict[str, str],
     contexto: dict[str, str],
+    dynamodb_resource: Any | None = None,
+    pipeline_control_table: str = common.DEFAULT_PIPELINE_CONTROL_TABLE,
 ) -> dict[str, Any]:
     """Seleciona e resolve a execucao SOT."""
     execucao = common.selecionar_unico(
         config_origem.get("execucoes", []),
-        {"dominio": "sot", "process_id": args["PROCESS_ID"]},
+        {"dominio": "sot", "process_name": contexto["PROCESS_NAME"]},
         "execucao SOT",
     )
-    return common.resolver_template("execucao", execucao, contexto)
+    input_locks = {}
+    if common.config_usa_placeholder(execucao, "INGESTION_ID"):
+        if dynamodb_resource is None:
+            raise ValueError("SOT exige dynamodb_resource para resolver INPUT_LOCK.")
+        input_locks = common.obter_input_locks_processo(
+            dynamodb_resource,
+            args["PROCESS_ID"],
+            pipeline_control_table,
+        )
+    return common.resolver_execucao_com_input_locks(execucao, contexto, input_locks)
 
 
 def montar_fontes(
@@ -55,11 +69,12 @@ def montar_fontes(
 def obter_destino(
     config_destino: dict[str, Any],
     args: dict[str, str],
+    contexto: dict[str, str],
 ) -> dict[str, Any]:
     """Seleciona destino SOT."""
     destino = common.selecionar_unico(
         config_destino.get("destinos", []),
-        {"dominio": "sot", "process_id": args["PROCESS_ID"]},
+        {"dominio": "sot", "process_name": contexto["PROCESS_NAME"]},
         "destino SOT",
     )
     return common.montar_destino_final(config_destino, destino, args)

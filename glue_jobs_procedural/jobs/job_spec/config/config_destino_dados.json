@@ -10,7 +10,7 @@
     {
       "dominio": "spec",
       "tipo_saida_destino": "catalogo",
-      "process_id": "contratos_spec",
+      "process_name": "seguros",
       "nome_database_destino": "spec_db",
       "nome_tabela_destino": "contratos_spec",
       "particao_tabela_destino": [

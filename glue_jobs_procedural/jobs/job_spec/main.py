@@ -30,7 +30,10 @@ def inicializar_contexto() -> dict:
 
 def montar_contexto_templates(args: dict[str, str]) -> dict[str, str]:
     """Monta placeholders SPEC."""
-    return spec.montar_contexto_templates(args)
+    import boto3
+
+    dynamodb_resource = boto3.resource("dynamodb", region_name=AWS_REGION)
+    return spec.montar_contexto_templates(args, dynamodb_resource=dynamodb_resource)
 
 
 def montar_fontes(args: dict[str, str], contexto_templates: dict[str, str]) -> tuple[dict, list[dict]]:
@@ -64,10 +67,16 @@ def executar_consultas(contexto_glue: dict, execucao: dict) -> object:
     return common.executar_consultas_sql(contexto_glue["spark"], caminho_sql)
 
 
-def gravar_resultado(contexto_glue: dict, args: dict[str, str], execucao: dict, df_entrada: object) -> None:
+def gravar_resultado(
+    contexto_glue: dict,
+    args: dict[str, str],
+    contexto_templates: dict[str, str],
+    execucao: dict,
+    df_entrada: object,
+) -> None:
     """Adiciona colunas tecnicas e grava resultado."""
     config_destino = common.carregar_json(CONFIG_DESTINO_PATH)
-    destino = spec.obter_destino(config_destino, args)
+    destino = spec.obter_destino(config_destino, args, contexto_templates)
     colunas_tecnicas = spec.obter_colunas_tecnicas(execucao, args)
     df_saida = common.adicionar_colunas_tecnicas(df_entrada, colunas_tecnicas)
     common.gravar_resultado(contexto_glue["glue_context"], df_saida, destino)
@@ -90,7 +99,7 @@ def executar_fluxo_de_processamento() -> None:
     df = executar_consultas(contexto_glue, execucao)
 
     logger.info("===Etapa 4: Gravando resultado===")
-    gravar_resultado(contexto_glue, args, execucao, df)
+    gravar_resultado(contexto_glue, args, contexto_templates, execucao, df)
 
 
 if __name__ == "__main__":

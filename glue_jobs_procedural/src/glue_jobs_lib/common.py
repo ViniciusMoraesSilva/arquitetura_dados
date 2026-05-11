@@ -11,6 +11,8 @@ from string import Formatter
 from typing import Any
 from urllib.parse import urlparse
 
+DEFAULT_PIPELINE_CONTROL_TABLE = "pipeline_control"
+
 
 def resolver_argumentos_obrigatorios(nomes_argumentos: list[str]) -> dict[str, str]:
     """Resolve argumentos obrigatorios do Glue."""
@@ -122,6 +124,77 @@ def config_usa_placeholder(valor: Any, nome_placeholder: str) -> bool:
     return nome_placeholder in placeholders
 
 
+def obter_metadata_processo(
+    dynamodb_resource: Any,
+    process_id: str,
+    table_name: str = DEFAULT_PIPELINE_CONTROL_TABLE,
+) -> dict[str, Any]:
+    """Busca metadata do processo por PROCESS_ID."""
+    tabela = dynamodb_resource.Table(table_name)
+    resposta = tabela.get_item(
+        Key={
+            "PK": f"PROCESS#{process_id}",
+            "SK": "METADATA",
+        }
+    )
+    metadata = resposta.get("Item")
+    if not metadata:
+        raise ValueError(f"Metadata de processo nao encontrada para PROCESS_ID={process_id}.")
+    if str(metadata.get("process_id")) != str(process_id):
+        raise ValueError("Metadata retornada nao corresponde ao PROCESS_ID solicitado.")
+    if not metadata.get("process_name"):
+        raise ValueError(f"Metadata do PROCESS_ID={process_id} nao possui process_name.")
+    if not metadata.get("data_referencia"):
+        raise ValueError(f"Metadata do PROCESS_ID={process_id} nao possui data_referencia.")
+    return metadata
+
+
+def montar_contexto_processo(metadata: dict[str, Any]) -> dict[str, str]:
+    """Monta contexto de templates a partir da metadata do processo."""
+    return {
+        "PROCESS_ID": str(metadata["process_id"]),
+        "PROCESS_NAME": str(metadata["process_name"]),
+        **montar_contexto_data(str(metadata["data_referencia"])),
+    }
+
+
+def obter_input_locks_processo(
+    dynamodb_resource: Any,
+    process_id: str,
+    table_name: str = DEFAULT_PIPELINE_CONTROL_TABLE,
+) -> dict[str, dict[str, Any]]:
+    """Busca INPUT_LOCKs do processo, indexados por sor_table_name."""
+    tabela = dynamodb_resource.Table(table_name)
+    parametros_query = {
+        "KeyConditionExpression": "#pk = :pk AND begins_with(#sk, :prefixo_sk)",
+        "ExpressionAttributeNames": {"#pk": "PK", "#sk": "SK"},
+        "ExpressionAttributeValues": {
+            ":pk": f"PROCESS#{process_id}",
+            ":prefixo_sk": "INPUT_LOCK#",
+        },
+    }
+    itens = []
+    while True:
+        resposta = tabela.query(**parametros_query)
+        itens.extend(resposta.get("Items", []))
+        last_key = resposta.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        parametros_query["ExclusiveStartKey"] = last_key
+
+    locks = {}
+    for item in itens:
+        sor_table_name = item.get("sor_table_name")
+        ingestion_id = item.get("ingestion_id")
+        if not sor_table_name or not ingestion_id:
+            raise ValueError(
+                "INPUT_LOCK invalido para "
+                f"PROCESS_ID={process_id}: sor_table_name e ingestion_id sao obrigatorios."
+            )
+        locks[str(sor_table_name)] = item
+    return locks
+
+
 def resolver_template(campo: str, valor: Any, contexto: dict[str, str]) -> Any:
     """Resolve templates em dict/list/string e falha para placeholder desconhecido."""
     if isinstance(valor, dict):
@@ -140,6 +213,33 @@ def resolver_template(campo: str, valor: Any, contexto: dict[str, str]) -> Any:
             f"Placeholder desconhecido no campo {campo}: " + ", ".join(desconhecidos)
         )
     return valor.format(**contexto)
+
+
+def resolver_execucao_com_input_locks(
+    execucao: dict[str, Any],
+    contexto: dict[str, str],
+    input_locks: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Resolve execucao usando INPUT_LOCK por fonte quando INGESTION_ID for necessario."""
+    execucao_base = {chave: valor for chave, valor in execucao.items() if chave != "fontes"}
+    execucao_resolvida = resolver_template("execucao", execucao_base, contexto)
+    fontes_resolvidas = []
+
+    for fonte in execucao.get("fontes", []):
+        contexto_fonte = {**contexto}
+        if config_usa_placeholder(fonte, "INGESTION_ID"):
+            tabela_origem = str(fonte["tabela_origem"])
+            lock = input_locks.get(tabela_origem)
+            if not lock:
+                raise ValueError(
+                    "INPUT_LOCK nao encontrado para "
+                    f"PROCESS_ID={contexto['PROCESS_ID']}, tabela_origem={tabela_origem}."
+                )
+            contexto_fonte["INGESTION_ID"] = str(lock["ingestion_id"])
+        fontes_resolvidas.append(resolver_template("fonte", fonte, contexto_fonte))
+
+    execucao_resolvida["fontes"] = fontes_resolvidas
+    return execucao_resolvida
 
 
 def parsear_table_predicates(predicates_str: str | None) -> dict[str, str]:

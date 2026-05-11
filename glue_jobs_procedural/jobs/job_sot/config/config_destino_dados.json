@@ -10,7 +10,7 @@
     {
       "dominio": "sot",
       "tipo_saida_destino": "catalogo",
-      "process_id": "contratos_sot",
+      "process_name": "seguros",
       "nome_database_destino": "sot_db",
       "nome_tabela_destino": "contratos_sot",
       "particao_tabela_destino": [

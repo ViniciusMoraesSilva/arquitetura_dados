@@ -6,7 +6,7 @@
   "execucoes": [
     {
       "dominio": "sot",
-      "process_id": "contratos_sot",
+      "process_name": "seguros",
       "sql_path": "sql/contratos_sot.sql",
       "post_columns": {
         "process_id": "{PROCESS_ID}"
