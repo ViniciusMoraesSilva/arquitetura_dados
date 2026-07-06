@@ -1,0 +1,175 @@
+sequenceDiagram
+    autonumber
+
+    participant Origem as Origem / Evento
+    participant EB as EventBridge
+    participant SFN_SOR as Step Function SOR
+    participant LIng as Lambda Controlar Ingestão
+    participant GlueSOR as Glue SOR
+    participant DDB as DynamoDB
+    participant LAuto as Lambda Orquestradora
+    participant Site as Site
+    participant API as API Gateway
+    participant SFN_PROC as Step Function Orquestradora de Processamento
+    participant LProc as Lambda Criar Processo
+    participant SFN_REGRAS as Step Function Fluxo de Regras
+    participant GlueRules as Glue Regras
+    participant GlueCons as Glue Consolidação SOT
+    participant SFN_SPEC as Step Function Publicação SPEC
+    participant LSpec as Lambda Publicar SPEC Manual
+    participant GlueSPEC as Glue SPEC
+    participant SOR as S3 SOR
+    participant SOT as S3 SOT
+    participant SPEC as S3 SPEC
+
+    %% ==========================================================
+    %% 1. EVENTO DE ORIGEM
+    %% ==========================================================
+
+    Origem->>EB: Evento origem disponível<br/>{ produto: "seguros", origem: "cliente", data_referencia: "202604", arquivo: "s3://landing/seguros/cliente/202604/file.parquet" }
+
+    EB->>SFN_SOR: StartExecution<br/>{ produto: "seguros", origem: "cliente", data_referencia: "202604", source_path: "s3://landing/seguros/cliente/202604/file.parquet", trigger_type: "EVENT" }
+
+    %% ==========================================================
+    %% 2. INGESTÃO SOR
+    %% ==========================================================
+
+    SFN_SOR->>LIng: Registrar ingestão<br/>{ produto: "seguros", origem: "cliente", data_referencia: "202604", source_path: "s3://landing/..." }
+
+    LIng->>DDB: ADD contador ingestion<br/>COUNTER#INGESTION#seguros#cliente#202604
+
+    LIng->>DDB: PutItem INGESTION<br/>{ ingestion_id: "000003", produto: "seguros", origem: "cliente", data_referencia: "202604", status: "PROCESSING_SOR", started_at: "2026-07-06T10:00:00" }
+
+    LIng-->>SFN_SOR: Retorna contexto<br/>{ ingestion_id: "000003", produto: "seguros", origem: "cliente", data_referencia: "202604", source_path: "s3://landing/...", sor_path: "s3://sor/seguros/202604/cliente/000003/" }
+
+    SFN_SOR->>GlueSOR: StartJobRun<br/>--produto seguros<br/>--origem cliente<br/>--data_referencia 202604<br/>--ingestion_id 000003<br/>--source_path s3://landing/...<br/>--target_path s3://sor/seguros/202604/cliente/000003/
+
+    GlueSOR->>SOR: Grava SOR<br/>s3://sor/seguros/202604/cliente/000003/
+
+    SFN_SOR->>LIng: Finalizar ingestão<br/>{ ingestion_id: "000003", status_glue: "SUCCEEDED", rows: 150000, target_path: "s3://sor/.../000003/" }
+
+    LIng->>DDB: Update INGESTION<br/>{ ingestion_id: "000003", status: "LOADED_SOR", finished_at: "2026-07-06T10:08:00", rows: 150000 }
+
+    LIng->>DDB: Update CURRENT_SOR<br/>{ pk: "CURRENT_SOR#seguros#202604", sk: "ORIGIN#cliente", current_ingestion_id: "000003" }
+
+    LIng-->>SFN_SOR: Ingestão finalizada<br/>{ produto: "seguros", origem: "cliente", data_referencia: "202604", ingestion_id: "000003", status: "LOADED_SOR" }
+
+    %% ==========================================================
+    %% 3. VERIFICAÇÃO AUTOMÁTICA
+    %% ==========================================================
+
+    SFN_SOR->>LAuto: Avaliar execução automática<br/>{ produto: "seguros", origem: "cliente", data_referencia: "202604", ingestion_id: "000003" }
+
+    LAuto->>DDB: GetItem PROCESS_CONFIG<br/>PROCESS_CONFIG#seguros
+
+    DDB-->>LAuto: Config exemplo<br/>{ rules_execution_mode: "FIRST_ONLY", spec_execution_mode: "AUTO", required_origins: ["cliente", "contrato", "parcela"], processing_state_machine_arn: "arn:...:sfn-orq-processamento", rules_flow_state_machine_arn: "arn:...:sfn-fluxo-regras-seguros", spec_state_machine_arn: "arn:...:sfn-spec-seguros" }
+
+    LAuto->>DDB: Query CURRENT_SOR<br/>produto=seguros, data_referencia=202604
+
+    DDB-->>LAuto: Origens disponíveis<br/>{ cliente: "000003", contrato: "000004", parcela: "000002" }
+
+    alt Modo permite e todas as origens obrigatórias existem
+        LAuto->>SFN_PROC: StartExecution<br/>{ produto: "seguros", data_referencia: "202604", trigger_type: "AUTO", input_overrides: null }
+    else Faltando origem, modo MANUAL ou LOCKED
+        LAuto->>DDB: Update PROCESS_WINDOW<br/>{ status: "WAITING_INPUTS" ou "MANUAL_REQUIRED", last_event_origin: "cliente", last_ingestion_id: "000003" }
+    end
+
+    %% ==========================================================
+    %% 4. EXECUÇÃO MANUAL DAS REGRAS PELO SITE
+    %% ==========================================================
+
+    Site->>API: Solicita execução manual<br/>{ produto: "seguros", data_referencia: "202604", input_overrides: { cliente: "000002", contrato: "000004", parcela: "LATEST" } }
+
+    API->>SFN_PROC: StartExecution<br/>{ produto: "seguros", data_referencia: "202604", trigger_type: "MANUAL", requested_by: "usuario_x", input_overrides: { cliente: "000002", contrato: "000004", parcela: "LATEST" } }
+
+    %% ==========================================================
+    %% 5. ORQUESTRADORA DE PROCESSAMENTO
+    %% ==========================================================
+
+    SFN_PROC->>LProc: Criar processo<br/>{ produto: "seguros", data_referencia: "202604", trigger_type: "AUTO ou MANUAL", input_overrides: "opcional" }
+
+    LProc->>DDB: ADD contador process<br/>COUNTER#PROCESS#seguros#202604
+
+    LProc->>DDB: Resolve versões<br/>CURRENT_SOR + input_overrides
+
+    DDB-->>LProc: Versões resolvidas<br/>{ cliente: "000002", contrato: "000004", parcela: "000002" }
+
+    LProc->>DDB: PutItem PROCESS_EXECUTION<br/>{ process_id: "000008", produto: "seguros", data_referencia: "202604", trigger_type: "MANUAL", status: "RUNNING", input_lock: { cliente: "000002", contrato: "000004", parcela: "000002" } }
+
+    LProc-->>SFN_PROC: Retorna processo<br/>{ process_id: "000008", produto: "seguros", data_referencia: "202604", input_lock_created: true }
+
+    SFN_PROC->>DDB: GetItem PROCESS_CONFIG<br/>PROCESS_CONFIG#seguros
+
+    DDB-->>SFN_PROC: Config com ARNs<br/>{ rules_flow_state_machine_arn: "arn:...:sfn-fluxo-regras-seguros", spec_execution_mode: "AUTO", spec_state_machine_arn: "arn:...:sfn-spec-seguros" }
+
+    SFN_PROC->>SFN_REGRAS: states:startExecution.sync<br/>StateMachineArn = rules_flow_state_machine_arn<br/>Input = { produto: "seguros", data_referencia: "202604", process_id: "000008" }
+
+    %% ==========================================================
+    %% 6. FLUXO DE REGRAS / SOT
+    %% ==========================================================
+
+    SFN_REGRAS->>GlueRules: StartJobRun Regra 1<br/>--produto seguros<br/>--data_referencia 202604<br/>--process_id 000008<br/>--regra regra_cliente_contrato
+
+    GlueRules->>DDB: GetItem PROCESS_EXECUTION<br/>PROCESS_EXECUTION#seguros#202604#000008
+
+    DDB-->>GlueRules: INPUT_LOCK<br/>{ cliente: "000002", contrato: "000004", parcela: "000002" }
+
+    GlueRules->>SOR: Lê SOR travado<br/>cliente=000002<br/>contrato=000004<br/>parcela=000002
+
+    GlueRules->>SOT: Grava saída regra<br/>s3://sot/seguros/202604/process_id=000008/regra=regra_cliente_contrato/
+
+    SFN_REGRAS->>GlueCons: StartJobRun Consolidação<br/>--produto seguros<br/>--data_referencia 202604<br/>--process_id 000008
+
+    GlueCons->>SOT: Lê saídas das regras<br/>process_id=000008
+
+    GlueCons->>SOT: Grava SOT consolidada<br/>s3://sot/seguros/202604/process_id=000008/consolidado/
+
+    SFN_REGRAS-->>SFN_PROC: Retorna sucesso<br/>{ process_id: "000008", rules_status: "SUCCEEDED" }
+
+    %% ==========================================================
+    %% 7. DECISÃO DE PUBLICAÇÃO SPEC
+    %% ==========================================================
+
+    SFN_PROC->>DDB: Update PROCESS_EXECUTION<br/>{ process_id: "000008", status: "RULES_PROCESSED" }
+
+    SFN_PROC->>DDB: GetItem PROCESS_CONFIG<br/>PROCESS_CONFIG#seguros
+
+    DDB-->>SFN_PROC: Config SPEC<br/>{ spec_execution_mode: "AUTO", spec_state_machine_arn: "arn:...:sfn-spec-seguros" }
+
+    alt spec_execution_mode == AUTO
+        SFN_PROC->>SFN_SPEC: states:startExecution<br/>StateMachineArn = spec_state_machine_arn<br/>Input = { produto: "seguros", data_referencia: "202604", process_id: "000008", trigger_type: "AUTO_SPEC" }
+    else spec_execution_mode == MANUAL
+        SFN_PROC->>DDB: Update PROCESS_EXECUTION<br/>{ process_id: "000008", status: "WAITING_SPEC_PUBLICATION" }
+    end
+
+    %% ==========================================================
+    %% 8. PUBLICAÇÃO MANUAL DA SPEC PELO SITE
+    %% ==========================================================
+
+    Site->>API: Publicar SPEC manualmente<br/>{ produto: "seguros", data_referencia: "202604", process_id: "000008" }
+
+    API->>LSpec: Solicitar publicação<br/>{ produto: "seguros", data_referencia: "202604", process_id: "000008", requested_by: "usuario_x" }
+
+    LSpec->>DDB: GetItem PROCESS_CONFIG<br/>PROCESS_CONFIG#seguros
+
+    LSpec->>DDB: GetItem PROCESS_EXECUTION<br/>PROCESS_EXECUTION#seguros#202604#000008
+
+    DDB-->>LSpec: Status atual<br/>{ status: "WAITING_SPEC_PUBLICATION" ou "RULES_PROCESSED", spec_state_machine_arn: "arn:...:sfn-spec-seguros" }
+
+    LSpec->>SFN_SPEC: StartExecution SPEC correta<br/>{ produto: "seguros", data_referencia: "202604", process_id: "000008", trigger_type: "MANUAL_SPEC" }
+
+    %% ==========================================================
+    %% 9. STEP FUNCTION PUBLICAÇÃO SPEC
+    %% ==========================================================
+
+    SFN_SPEC->>DDB: GetItem PROCESS_EXECUTION<br/>PROCESS_EXECUTION#seguros#202604#000008
+
+    SFN_SPEC->>DDB: Update status<br/>{ process_id: "000008", status: "PUBLISHING_SPEC" }
+
+    SFN_SPEC->>GlueSPEC: StartJobRun Glue SPEC<br/>--produto seguros<br/>--data_referencia 202604<br/>--process_id 000008
+
+    GlueSPEC->>SOT: Lê SOT consolidada<br/>s3://sot/seguros/202604/process_id=000008/consolidado/
+
+    GlueSPEC->>SPEC: Publica SPEC<br/>s3://spec/seguros/202604/process_id=000008/
+
+    SFN_SPEC->>DDB: Update PROCESS_EXECUTION<br/>{ process_id: "000008", status: "PUBLISHED", published_at: "2026-07-06T10:40:00" }
