@@ -1,0 +1,124 @@
+sequenceDiagram
+    autonumber
+
+    participant Origem as Origem / Evento
+    participant EB as EventBridge
+    participant SFN_SOR as Step Function SOR
+    participant LIng as Lambda Controlar Ingestão
+    participant GlueSOR as Glue SOR
+    participant DDB as DynamoDB
+    participant LAuto as Lambda Orquestradora
+    participant Site as Site
+    participant API as API Gateway
+    participant SFN_PROC as Step Function Orquestradora de Processamento
+    participant LProc as Lambda Criar Processo
+    participant SFN_RULES_FLOW as Step Function Fluxo de Regras
+    participant GlueRules as Glue Regras
+    participant GlueCons as Glue Consolidação SOT
+    participant LSpecManual as Lambda Publicar SPEC Manual
+    participant SFN_SPEC as Step Function Publicação SPEC
+    participant GlueSPEC as Glue SPEC
+    participant SOR as S3 SOR
+    participant SOT as S3 SOT
+    participant SPEC as S3 SPEC
+
+    %% ==========================================================
+    %% INGESTÃO SOR
+    %% ==========================================================
+
+    Origem->>EB: Evento de origem disponível
+    EB->>SFN_SOR: StartExecution SOR
+
+    SFN_SOR->>LIng: Registrar ingestão
+    LIng->>DDB: Gera ingestion_id sequencial
+    LIng->>DDB: Status PROCESSING_SOR
+
+    SFN_SOR->>GlueSOR: Executa Glue SOR
+    GlueSOR->>DDB: Consulta metadados da ingestão
+    GlueSOR->>SOR: Grava arquivos SOR com ingestion_id
+
+    SFN_SOR->>LIng: Finalizar ingestão
+    LIng->>DDB: Status LOADED_SOR
+    LIng->>DDB: Atualiza CURRENT_SOR
+    LIng->>DDB: Grava histórico da ingestão
+
+    SFN_SOR->>LAuto: Verificar execução automática
+    LAuto->>DDB: Consulta PROCESS_CONFIG
+    LAuto->>DDB: Consulta origens obrigatórias e recebidas
+
+    alt Pode executar automaticamente
+        LAuto->>DDB: Tenta travar janela de execução
+        LAuto->>SFN_PROC: StartExecution Orquestradora de Processamento
+    else Manual, travado ou faltando origem
+        LAuto-->>DDB: Atualiza visão/status da competência
+    end
+
+    %% ==========================================================
+    %% EXECUÇÃO MANUAL PELO SITE
+    %% ==========================================================
+
+    Site->>API: Solicita execução manual com versões escolhidas
+    API->>SFN_PROC: StartExecution com input_overrides
+
+    %% ==========================================================
+    %% ORQUESTRAÇÃO DE PROCESSAMENTO
+    %% ==========================================================
+
+    SFN_PROC->>LProc: Criar processo
+    LProc->>DDB: Gera process_id sequencial
+    LProc->>DDB: Resolve CURRENT_SOR ou input_overrides
+    LProc->>DDB: Cria INPUT_LOCK
+    LProc->>DDB: Status RUNNING
+    LProc-->>SFN_PROC: Retorna process_id
+
+    SFN_PROC->>DDB: GetItem PROCESS_CONFIG
+    SFN_PROC->>SFN_RULES_FLOW: states:startExecution Fluxo de Regras dinâmico
+
+    %% ==========================================================
+    %% FLUXO DE REGRAS / SOT
+    %% ==========================================================
+
+    SFN_RULES_FLOW->>GlueRules: Executa regras do produto
+    GlueRules->>DDB: Busca INPUT_LOCK pelo process_id
+    GlueRules->>SOR: Lê SOR pelos ingestion_ids travados
+    GlueRules->>SOT: Grava resultados das regras
+
+    SFN_RULES_FLOW->>GlueCons: Consolida SOT
+    GlueCons->>SOT: Grava SOT consolidada por process_id
+    SFN_RULES_FLOW-->>SFN_PROC: Retorna sucesso do fluxo de regras
+
+    %% ==========================================================
+    %% DECISÃO DE PUBLICAÇÃO DA SPEC
+    %% ==========================================================
+
+    SFN_PROC->>DDB: Status RULES_PROCESSED
+    SFN_PROC->>DDB: GetItem PROCESS_CONFIG
+
+    alt spec_execution_mode == AUTO
+        SFN_PROC->>SFN_SPEC: states:startExecution Publicação SPEC dinâmica
+    else spec_execution_mode == MANUAL
+        SFN_PROC->>DDB: Status WAITING_SPEC_PUBLICATION
+    end
+
+    %% ==========================================================
+    %% PUBLICAÇÃO MANUAL DA SPEC PELO SITE
+    %% ==========================================================
+
+    Site->>API: Solicita publicação manual da SPEC
+    API->>LSpecManual: Publicar SPEC Manual
+    LSpecManual->>DDB: Consulta PROCESS_CONFIG
+    LSpecManual->>DDB: Valida process_id e status
+    LSpecManual->>SFN_SPEC: StartExecution Publicação SPEC correta
+
+    %% ==========================================================
+    %% PUBLICAÇÃO SPEC
+    %% ==========================================================
+
+    SFN_SPEC->>DDB: Valida process_id RULES_PROCESSED ou WAITING_SPEC_PUBLICATION
+    SFN_SPEC->>DDB: Status PUBLISHING_SPEC
+    SFN_SPEC->>GlueSPEC: Executa Glue SPEC
+
+    GlueSPEC->>SOT: Lê SOT por process_id
+    GlueSPEC->>SPEC: Publica arquivos SPEC
+
+    SFN_SPEC->>DDB: Status PUBLISHED
